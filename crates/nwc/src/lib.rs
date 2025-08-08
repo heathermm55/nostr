@@ -20,6 +20,7 @@ pub extern crate nostr;
 use async_utility::time;
 use nostr::nips::nip47::{Request, Response};
 use nostr_relay_pool::prelude::*;
+use nostr::Keys;
 
 pub mod error;
 pub mod options;
@@ -30,8 +31,6 @@ pub use self::error::Error;
 #[doc(hidden)]
 pub use self::options::NostrWalletConnectOptions;
 
-const ID: &str = "nwc";
-
 /// Nostr Wallet Connect client
 #[derive(Debug, Clone)]
 pub struct NWC {
@@ -39,6 +38,7 @@ pub struct NWC {
     pool: RelayPool,
     opts: NostrWalletConnectOptions,
     bootstrapped: Arc<AtomicBool>,
+    subscription_keys: Arc<Keys>, // Random keys for subscription ID
 }
 
 impl NWC {
@@ -55,6 +55,7 @@ impl NWC {
             pool: RelayPool::default(),
             opts,
             bootstrapped: Arc::new(AtomicBool::new(false)),
+            subscription_keys: Arc::new(Keys::generate()), // Generate random keys for subscription ID
         }
     }
 
@@ -81,12 +82,15 @@ impl NWC {
 
         let filter = Filter::new()
             .author(self.uri.public_key)
-            .kind(Kind::WalletConnectResponse)
-            .limit(0); // Limit to 0 means give me 0 events until EOSE
+            .kind(Kind::WalletConnectResponse);
+            // Removed limit parameter to allow continuous listening
+
+        // Use random subscription ID instead of fixed "nwc"
+        let subscription_id = SubscriptionId::new(self.subscription_keys.public_key().to_string());
 
         // Subscribe
         self.pool
-            .subscribe_with_id(SubscriptionId::new(ID), filter, SubscribeOptions::default())
+            .subscribe_with_id(subscription_id, filter, SubscribeOptions::default())
             .await?;
 
         // Mark as bootstrapped
