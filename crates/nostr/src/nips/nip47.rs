@@ -17,7 +17,6 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
 use super::nip04;
-use super::nip44;
 use crate::types::url::form_urlencoded::byte_serialize;
 use crate::types::url::{RelayUrl, Url};
 #[cfg(feature = "std")]
@@ -31,8 +30,6 @@ pub enum Error {
     Json(serde_json::Error),
     /// NIP04 error
     NIP04(nip04::Error),
-    /// NIP44 error
-    NIP44(nip44::Error),
     /// Event Builder error
     #[cfg(feature = "std")]
     EventBuilder(event::builder::Error),
@@ -59,7 +56,6 @@ impl fmt::Display for Error {
         match self {
             Self::Json(e) => write!(f, "{e}"),
             Self::NIP04(e) => write!(f, "{e}"),
-            Self::NIP44(e) => write!(f, "{e}"),
             #[cfg(feature = "std")]
             Self::EventBuilder(e) => write!(f, "{e}"),
             Self::ErrorCode(e) => write!(f, "{e}"),
@@ -82,12 +78,6 @@ impl From<serde_json::Error> for Error {
 impl From<nip04::Error> for Error {
     fn from(e: nip04::Error) -> Self {
         Self::NIP04(e)
-    }
-}
-
-impl From<nip44::Error> for Error {
-    fn from(e: nip44::Error) -> Self {
-        Self::NIP44(e)
     }
 }
 
@@ -528,8 +518,7 @@ impl Request {
     /// Create request [Event]
     #[cfg(feature = "std")]
     pub fn to_event(self, uri: &NostrWalletConnectURI) -> Result<Event, Error> {
-        // Use NIP-44 encryption instead of NIP-04
-        let encrypted = nip44::encrypt(&uri.secret, &uri.public_key, self.as_json(), nip44::Version::V2)?;
+        let encrypted = nip04::encrypt(&uri.secret, &uri.public_key, self.as_json())?;
         let keys: Keys = Keys::new(uri.secret.clone());
         Ok(EventBuilder::new(Kind::WalletConnectRequest, encrypted)
             .tag(Tag::public_key(uri.public_key))
@@ -726,14 +715,7 @@ impl Response {
     /// Deserialize from [Event]
     #[inline]
     pub fn from_event(uri: &NostrWalletConnectURI, event: &Event) -> Result<Self, Error> {
-        // Try NIP-44 decryption first, fallback to NIP-04 for backward compatibility
-        let decrypt_res: String = match nip44::decrypt(&uri.secret, &event.pubkey, &event.content) {
-            Ok(res) => res,
-            Err(_) => {
-                // Fallback to NIP-04 for backward compatibility
-                nip04::decrypt(&uri.secret, &event.pubkey, &event.content)?
-            }
-        };
+        let decrypt_res: String = nip04::decrypt(&uri.secret, &event.pubkey, &event.content)?;
         Self::from_json(&decrypt_res).map_err(|e| Error::CantDeserializeResponse {
             response: decrypt_res,
             error: e.to_string(),
@@ -1105,14 +1087,7 @@ impl Notification {
     /// Deserialize from [Event]
     #[inline]
     pub fn from_event(uri: &NostrWalletConnectURI, event: &Event) -> Result<Self, Error> {
-        // Try NIP-44 decryption first, fallback to NIP-04 for backward compatibility
-        let decrypt_res: String = match nip44::decrypt(&uri.secret, &event.pubkey, &event.content) {
-            Ok(res) => res,
-            Err(_) => {
-                // Fallback to NIP-04 for backward compatibility
-                nip04::decrypt(&uri.secret, &event.pubkey, &event.content)?
-            }
-        };
+        let decrypt_res: String = nip04::decrypt(&uri.secret, &event.pubkey, &event.content)?;
         Self::from_json(decrypt_res)
     }
 
@@ -1226,72 +1201,6 @@ mod tests {
     use core::str::FromStr;
 
     use super::*;
-    use crate::Keys;
-
-    #[test]
-    #[cfg(feature = "nip44")]
-    fn test_nip44_encryption() {
-        // Test that NIP-44 encryption works for NWC
-        let keys = Keys::generate();
-        let uri = NostrWalletConnectURI::new(
-            keys.public_key(),
-            vec![RelayUrl::parse("wss://relay.example.com").unwrap()],
-            keys.secret_key().clone(),
-            Some("test@example.com".to_string()),
-        );
-
-        let request = Request::get_info();
-        let event = request.to_event(&uri).unwrap();
-        
-        // Verify the event was encrypted with NIP-44
-        assert_eq!(event.kind, Kind::WalletConnectRequest);
-        assert_eq!(event.pubkey, keys.public_key());
-        
-        // Test that the content is encrypted (should not be plain JSON)
-        assert!(!event.content.contains("get_info"));
-        assert!(!event.content.contains("method"));
-    }
-
-    #[test]
-    #[cfg(feature = "nip44")]
-    fn test_backward_compatibility() {
-        // Test that NIP-04 encrypted content can still be decrypted
-        let keys = Keys::generate();
-        let uri = NostrWalletConnectURI::new(
-            keys.public_key(),
-            vec![RelayUrl::parse("wss://relay.example.com").unwrap()],
-            keys.secret_key().clone(),
-            Some("test@example.com".to_string()),
-        );
-
-        // Create a response with NIP-04 encryption (simulating old format)
-        let response = Response {
-            result_type: Method::GetInfo,
-            error: None,
-            result: Some(ResponseResult::GetInfo(GetInfoResponse {
-                alias: Some("test".to_string()),
-                color: Some("#000000".to_string()),
-                pubkey: None,
-                network: Some("bitcoin".to_string()),
-                block_height: Some(800000),
-                block_hash: Some("0000000000000000000000000000000000000000000000000000000000000000".to_string()),
-                methods: vec!["get_info".to_string()],
-                notifications: vec![],
-            })),
-        };
-        let json_content = response.as_json();
-        let encrypted_content = nip04::encrypt(&uri.secret, &uri.public_key, &json_content).unwrap();
-        
-        // Create an event with NIP-04 encrypted content
-        let event = EventBuilder::new(Kind::WalletConnectResponse, encrypted_content)
-            .tag(Tag::public_key(uri.public_key))
-            .sign_with_keys(&Keys::new(uri.secret.clone()))
-            .unwrap();
-        
-        // Test that it can be decrypted using the new implementation
-        let decrypted = Response::from_event(&uri, &event).unwrap();
-        assert_eq!(decrypted.result_type, Method::GetInfo);
-    }
 
     #[test]
     fn test_uri() {
