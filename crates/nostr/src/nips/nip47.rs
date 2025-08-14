@@ -341,8 +341,10 @@ pub struct MakeInvoiceRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct LookupInvoiceRequest {
     /// Payment hash of invoice
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub payment_hash: Option<String>,
     /// Bolt11 invoice
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub invoice: Option<String>,
 }
 
